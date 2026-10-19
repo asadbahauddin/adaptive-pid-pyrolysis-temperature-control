@@ -96,6 +96,27 @@ const char HTML[] PROGMEM = R"HTMLDIAG(
 <h1>PYROLYSIS DIAGNOSTIC</h1>
 <div id="connBar"><span class="dot" id="connDot"></span><span id="connText">Menghubungkan...</span></div>
 
+<!-- 10. Grafik Suhu & Setpoint -->
+<div class="card">
+  <h3>10. Grafik Suhu &amp; Setpoint</h3>
+  <canvas id="chartTemp" style="width:100%;height:220px;background:#0d1229;border:1px solid var(--border);border-radius:6px;"></canvas>
+  <div class="hint">Merah = suhu aktual, hijau putus-putus = setpoint aktif (0 saat idle/Step Test, karena Step Test tidak memakai setpoint). Polling /data/live tiap 2 detik, maksimum 300 titik (&plusmn;10 menit). Sumbu Y dibatasi 0-300&deg;C; untuk Relay/Step Test di atas 300&deg;C titik akan terpotong secara visual saja (bukan data error). Grafik ini SATU-SATUNYA tempat melihat kurva suhu -- tetap dipakai walaupun Step Test atau Relay Test sedang berjalan.</div>
+</div>
+
+<!-- 11. Grafik Blower (Fan %) -->
+<div class="card">
+  <h3>11. Grafik Blower (Fan %)</h3>
+  <canvas id="chartFan" style="width:100%;height:180px;background:#0d1229;border:1px solid var(--border);border-radius:6px;"></canvas>
+</div>
+
+<!-- 12. Grafik Pompa Air & Oli -->
+<div class="card">
+  <h3>12. Grafik Pompa Air &amp; Oli</h3>
+  <canvas id="chartPump" style="width:100%;height:160px;background:#0d1229;border:1px solid var(--border);border-radius:6px;"></canvas>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+
 <!-- 1. MAX6675 -->
 <div class="card">
   <h3>1. MAX6675 Thermocouple</h3>
@@ -171,7 +192,7 @@ const char HTML[] PROGMEM = R"HTMLDIAG(
   <div class="progress"><div class="progress-bar" id="stBar"></div></div>
   <div class="status-line" id="stProgText">0 s</div>
   <div class="status-line">Suhu: <b id="stTemp">--</b> C &nbsp;|&nbsp; T0: <b id="stT0">--</b> C &nbsp;|&nbsp; Fan: <b id="stFan">--</b></div>
-  <canvas id="stChart" width="400" height="150" style="width:100%;height:150px;background:#0d1229;border:1px solid var(--border);border-radius:6px;margin-top:8px;"></canvas>
+  <div class="hint">Kurva suhu: lihat Grafik Suhu &amp; Setpoint di bagian atas halaman.</div>
   <div class="at-result" id="stResult" style="display:none;"></div>
   <div class="btn-row" id="stCopyRow" style="display:none;">
     <button class="warn" id="btnStCopy" onclick="stCopy()">SALIN HASIL</button>
@@ -235,26 +256,6 @@ const char HTML[] PROGMEM = R"HTMLDIAG(
   <div class="hint">Menjalankan Adaptive PID (gain scheduling 3-zona sama seperti firmware utama: Kp x1.3 di bawah 200 C, x1.0 di 200-400 C, x0.7 di atas 400 C; Ki/Kd tetap) memakai Kp/Ki/Kd yang sedang aktif (lihat card 8, "PID aktif"). Pompa oli &amp; air dinyalakan OTOMATIS selama uji supaya oli benar-benar menetes, dan dimatikan otomatis saat uji selesai/distop -- kontrol manual pompa (card 4/5) terkunci selama uji berjalan. Dua mode durasi: <b>Waktu Tetap</b> (durasi ditentukan di atas; begitu habis, uji dimatikan otomatis, mau tidak mau) atau <b>Tanpa Batas</b> (centang kotak di atas; uji terus berjalan sampai Anda tekan STOP). Kedua mode tetap berhenti otomatis kalau suhu melebihi setpoint+100 C atau sensor gagal baca. Tidak bisa berjalan bersamaan dengan Step/Relay Test. Waktu tiap tetes dicatat (detik sejak mulai) untuk menghitung laju produksi -- unduh CSV-nya lewat tombol di atas atau logger.py di laptop.</div>
 </div>
 
-<!-- 10. Grafik Suhu & Setpoint -->
-<div class="card">
-  <h3>10. Grafik Suhu &amp; Setpoint</h3>
-  <canvas id="chartTemp" style="width:100%;height:220px;background:#0d1229;border:1px solid var(--border);border-radius:6px;"></canvas>
-  <div class="hint">Merah = suhu aktual, hijau putus-putus = setpoint aktif (0 saat idle/Step Test, karena Step Test tidak memakai setpoint). Polling /data/live tiap 2 detik, maksimum 300 titik (&plusmn;10 menit). Sumbu Y dibatasi 0-300&deg;C; untuk Relay/Step Test di atas 300&deg;C titik akan terpotong secara visual saja (bukan data error).</div>
-</div>
-
-<!-- 11. Grafik Blower (Fan %) -->
-<div class="card">
-  <h3>11. Grafik Blower (Fan %)</h3>
-  <canvas id="chartFan" style="width:100%;height:180px;background:#0d1229;border:1px solid var(--border);border-radius:6px;"></canvas>
-</div>
-
-<!-- 12. Grafik Pompa Air & Oli -->
-<div class="card">
-  <h3>12. Grafik Pompa Air &amp; Oli</h3>
-  <canvas id="chartPump" style="width:100%;height:160px;background:#0d1229;border:1px solid var(--border);border-radius:6px;"></canvas>
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script>
 var connOk = false;
 
@@ -380,41 +381,6 @@ function stStart() {
 
 function stStop() { req("/step/stop"); }
 
-// Grafik suhu vs waktu (canvas). d.tr = titik yang di-downsample tiap d.dt detik,
-// d.ts = detik saat step diberikan.
-function stDraw(d, showSs) {
-  var c = stEl("stChart");
-  var g = c.getContext("2d");
-  var w = c.width, h = c.height;
-  g.clearRect(0, 0, w, h);
-  var tr = d.tr || [];
-  if (tr.length < 2) return;
-  var lo = Math.min.apply(null, tr), hi = Math.max.apply(null, tr);
-  if (d.T0 > 0) lo = Math.min(lo, d.T0);
-  if (showSs && d.Tss) hi = Math.max(hi, d.Tss);
-  if (hi - lo < 5) hi = lo + 5;
-  var padL = 34, padR = 6, padT = 6, padB = 14;
-  function X(i) { return padL + (w - padL - padR) * i / (tr.length - 1); }
-  function Y(v) { return padT + (h - padT - padB) * (1 - (v - lo) / (hi - lo)); }
-  g.lineWidth = 2; g.strokeStyle = "#4ecca3"; g.beginPath();
-  for (var i = 0; i < tr.length; i++) { if (i === 0) g.moveTo(X(i), Y(tr[i])); else g.lineTo(X(i), Y(tr[i])); }
-  g.stroke();
-  g.lineWidth = 1;
-  var si = d.ts / d.dt;                                  // indeks saat step
-  if (si < tr.length - 1) {
-    g.strokeStyle = "#ffd700"; g.setLineDash([4, 3]); g.beginPath();
-    g.moveTo(X(si), padT); g.lineTo(X(si), h - padB); g.stroke();
-  }
-  if (showSs && d.Tss) {
-    g.strokeStyle = "#e94560"; g.setLineDash([3, 3]); g.beginPath();
-    g.moveTo(padL, Y(d.Tss)); g.lineTo(w - padR, Y(d.Tss)); g.stroke();
-  }
-  g.setLineDash([]);
-  g.fillStyle = "#8f9bb3"; g.font = "10px sans-serif";
-  g.fillText(hi.toFixed(0), 2, padT + 8);
-  g.fillText(lo.toFixed(0), 2, h - padB);
-}
-
 function stHandle(d) {
   if (d.status === "started") {
     stEl("stResult").style.display = "none";
@@ -424,7 +390,6 @@ function stHandle(d) {
     stSetRunningUi(true);
     stEl("stBar").style.width = "0%";
     stEl("stProgText").textContent = "0 s";
-    stEl("stChart").getContext("2d").clearRect(0, 0, 400, 150);
     stSetPolling(true);
     req("/step/status");
   } else if (d.status === "running") {
@@ -437,7 +402,6 @@ function stHandle(d) {
     stEl("stTemp").textContent = d.temp.toFixed(1);
     stEl("stT0").textContent = (d.phase === "step") ? d.T0.toFixed(1) : "--";
     stEl("stFan").textContent = d.fan + "%";
-    stDraw(d, false);
   } else if (d.status === "done") {
     stSetPolling(false);
     stSetRunningUi(false);
@@ -445,7 +409,6 @@ function stHandle(d) {
     stEl("stPhase").textContent = "";
     stEl("stBar").style.width = "100%";
     stEl("stFan").textContent = "0%";
-    stDraw(d, true);
     stShowBox("L (dead time)     = " + d.L.toFixed(1) + " s\n" +
               "T (time constant) = " + d.T.toFixed(1) + " s\n" +
               "K (gain)          = " + d.K.toFixed(4) + " C/%\n" +
