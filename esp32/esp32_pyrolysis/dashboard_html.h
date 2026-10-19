@@ -115,8 +115,6 @@ const char HTML[] PROGMEM = R"HTMLDIAG(
   <canvas id="chartPump" style="width:100%;height:160px;background:#0d1229;border:1px solid var(--border);border-radius:6px;"></canvas>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-
 <!-- 1. MAX6675 -->
 <div class="card">
   <h3>1. MAX6675 Thermocouple</h3>
@@ -727,6 +725,11 @@ req("/pid/get");
 req("/method/status");
 
 // ---------------- Grafik real-time (card 10/11/12) ----------------
+// Digambar manual di <canvas> (TANPA library eksternal / CDN apapun): ESP32 adalah
+// Access Point offline, browser TIDAK PERNAH bisa mengakses internet untuk mengunduh
+// library seperti Chart.js, jadi <script src="https://..."> dari CDN tidak akan pernah
+// termuat dan grafik tidak akan pernah muncul. Pendekatan ini sama seperti grafik Step
+// Test yang lama (stDraw) yang sudah terbukti jalan offline.
 // SATU setInterval untuk ketiga grafik: tiap 2 detik fetch /data/live sekali,
 // lalu dorong satu titik baru ke ketiganya sekaligus (bukan 1 interval/grafik).
 var LIVE_MAX_POINTS = 300;
@@ -744,68 +747,79 @@ function fmtMMSS(sec) {
   return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
 }
 
-var liveGridColor = "#2a3358";
-var liveTickColor = "#8f9bb3";
-var liveChartDefaults = {
-  animation: false,
-  responsive: true,
-  maintainAspectRatio: false,
-  interaction: { mode: "nearest", intersect: false },
-  scales: { x: { ticks: { color: liveTickColor, maxTicksLimit: 8 }, grid: { color: liveGridColor } } },
-  plugins: { legend: { labels: { color: "#eaeaea", boxWidth: 12, font: { size: 11 } } } },
-};
+// Renderer kanvas generik dipakai oleh ketiga grafik.
+// series = [{ data:[...], color:"#rrggbb", dash:[a,b]|null, stepped:bool }]
+function drawMiniChart(canvasId, series, lo, hi, yTickFmt) {
+  var c = document.getElementById(canvasId);
+  var w = c.clientWidth || 300, h = c.clientHeight || 150;
+  if (c.width !== w) c.width = w;
+  if (c.height !== h) c.height = h;
+  var g = c.getContext("2d");
+  g.clearRect(0, 0, w, h);
 
-function liveOpts(yAxis) {
-  var o = JSON.parse(JSON.stringify(liveChartDefaults));
-  o.scales.y = yAxis;
-  return o;
+  var n = (series[0] && series[0].data.length) || 0;
+  if (n < 2) {
+    g.fillStyle = "#8f9bb3"; g.font = "12px sans-serif";
+    g.fillText("Menunggu data dari /data/live...", 10, h / 2);
+    return;
+  }
+
+  var padL = 34, padR = 6, padT = 6, padB = 16;
+  function X(i) { return padL + (w - padL - padR) * i / (n - 1); }
+  function Y(v) {
+    var vv = Math.max(lo, Math.min(hi, v));
+    return padT + (h - padT - padB) * (1 - (vv - lo) / (hi - lo));
+  }
+
+  g.strokeStyle = "#2a3358"; g.lineWidth = 1; g.setLineDash([]);
+  g.beginPath();
+  g.moveTo(padL, padT); g.lineTo(padL, h - padB); g.lineTo(w - padR, h - padB);
+  g.stroke();
+
+  for (var s = 0; s < series.length; s++) {
+    var ser = series[s];
+    g.lineWidth = 1.5; g.strokeStyle = ser.color;
+    g.setLineDash(ser.dash || []);
+    g.beginPath();
+    var drawing = false, lastY = null;
+    for (var i = 0; i < n; i++) {
+      var v = ser.data[i];
+      if (v === null || v === undefined || (typeof v === "number" && isNaN(v))) { drawing = false; continue; }
+      var x = X(i), y = Y(v);
+      if (!drawing) { g.moveTo(x, y); }
+      else { if (ser.stepped) g.lineTo(x, lastY); g.lineTo(x, y); }
+      drawing = true; lastY = y;
+    }
+    g.stroke();
+  }
+  g.setLineDash([]);
+
+  g.fillStyle = "#8f9bb3"; g.font = "10px sans-serif";
+  g.fillText(yTickFmt ? yTickFmt(hi) : hi.toFixed(0), 2, padT + 8);
+  g.fillText(yTickFmt ? yTickFmt(lo) : lo.toFixed(0), 2, h - padB + 2);
+
+  var steps = 3;
+  for (var k = 0; k <= steps; k++) {
+    var idx = Math.round((n - 1) * k / steps);
+    var lbl = liveLabels[idx] || "";
+    var tx = Math.max(padL, Math.min(w - padR - 24, X(idx) - 14));
+    g.fillText(lbl, tx, h - 3);
+  }
 }
 
-var chartTemp = new Chart(document.getElementById("chartTemp"), {
-  type: "line",
-  data: {
-    labels: liveLabels,
-    datasets: [
-      { label: "Suhu (C)", data: liveTemp, borderColor: "#e94560", backgroundColor: "transparent",
-        borderWidth: 1.5, pointRadius: 0, tension: 0.15, spanGaps: false },
-      { label: "Setpoint (C)", data: liveSp, borderColor: "#4ecca3", backgroundColor: "transparent",
-        borderWidth: 1.5, borderDash: [6, 4], pointRadius: 0, tension: 0 },
-    ],
-  },
-  options: liveOpts({ min: 0, max: 300, ticks: { color: liveTickColor }, grid: { color: liveGridColor } }),
-});
-
-var chartFan = new Chart(document.getElementById("chartFan"), {
-  type: "line",
-  data: {
-    labels: liveLabels,
-    datasets: [
-      { label: "Fan (%)", data: liveFan, borderColor: "#4ea1e9", backgroundColor: "rgba(78,161,233,0.15)",
-        fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0.15 },
-    ],
-  },
-  options: liveOpts({ min: 0, max: 100, ticks: { color: liveTickColor }, grid: { color: liveGridColor } }),
-});
-
-var chartPump = new Chart(document.getElementById("chartPump"), {
-  type: "line",
-  data: {
-    labels: liveLabels,
-    datasets: [
-      { label: "Water", data: liveWater, borderColor: "#4ea1e9", backgroundColor: "transparent",
-        borderWidth: 1.5, pointRadius: 0, stepped: true },
-      { label: "Oil", data: liveOil, borderColor: "#ffd700", backgroundColor: "transparent",
-        borderWidth: 1.5, pointRadius: 0, stepped: true },
-    ],
-  },
-  options: liveOpts({
-    min: -0.2, max: 1.2, ticks: {
-      color: liveTickColor, stepSize: 1,
-      callback: function (v) { if (v === 0) return "OFF"; if (v === 1) return "ON"; return ""; },
-    },
-    grid: { color: liveGridColor },
-  }),
-});
+function drawAllCharts() {
+  drawMiniChart("chartTemp", [
+    { data: liveTemp, color: "#e94560" },
+    { data: liveSp, color: "#4ecca3", dash: [6, 4] },
+  ], 0, 300);
+  drawMiniChart("chartFan", [
+    { data: liveFan, color: "#4ea1e9" },
+  ], 0, 100);
+  drawMiniChart("chartPump", [
+    { data: liveWater, color: "#4ea1e9", stepped: true },
+    { data: liveOil, color: "#ffd700", stepped: true },
+  ], -0.2, 1.2, function (v) { if (v >= 0.9) return "ON"; if (v <= 0.1) return "OFF"; return ""; });
+}
 
 function liveFetch() {
   var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
@@ -826,9 +840,7 @@ function liveFetch() {
         liveLabels.shift(); liveTemp.shift(); liveSp.shift();
         liveFan.shift(); liveWater.shift(); liveOil.shift();
       }
-      chartTemp.update("none");
-      chartFan.update("none");
-      chartPump.update("none");
+      drawAllCharts();
     })
     .catch(function () {
       if (timer) clearTimeout(timer);
