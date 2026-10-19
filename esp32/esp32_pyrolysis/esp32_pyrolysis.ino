@@ -1411,10 +1411,16 @@ static void sendStatusToArduino() {
 
   const char *statusStr = (fanRawValue > 0 || oilState || waterState) ? "RUN" : "IDLE";
 
+  // Sama seperti handleDataLive(): Relay Test (atActive) dan Uji Metode (mtActive)
+  // punya setpoint sendiri-sendiri. Sebelumnya hanya atActive yang dicek di sini,
+  // jadi LCD (via Arduino UNO) tetap menampilkan DEFAULT_SETPOINT (300) selama Uji
+  // Metode berjalan walaupun setpoint-nya sudah diubah (mis. ke 50).
+  float spForLcd = atActive ? atSetpoint : (mtActive ? mtSetpoint : (float)DEFAULT_SETPOINT);
+
   char buf[160];
   snprintf(buf, sizeof(buf),
            "{\"t\":%.1f,\"sp\":%.1f,\"pw\":%d,\"v\":%.2f,\"oil\":%d,\"water\":%d,\"s\":\"%s\"}\n",
-           lastGoodTemp, atActive ? atSetpoint : (float)DEFAULT_SETPOINT, fanPct, volume,
+           lastGoodTemp, spForLcd, fanPct, volume,
            oilState ? 1 : 0, waterState ? 1 : 0, statusStr);
 
   Serial2.print(buf);

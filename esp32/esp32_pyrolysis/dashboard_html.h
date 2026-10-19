@@ -100,7 +100,7 @@ const char HTML[] PROGMEM = R"HTMLDIAG(
 <div class="card">
   <h3>10. Grafik Suhu &amp; Setpoint</h3>
   <canvas id="chartTemp" style="width:100%;height:220px;background:#0d1229;border:1px solid var(--border);border-radius:6px;"></canvas>
-  <div class="hint">Merah = suhu aktual, hijau putus-putus = setpoint aktif (0 saat idle/Step Test, karena Step Test tidak memakai setpoint). Polling /data/live tiap 2 detik, maksimum 300 titik (&plusmn;10 menit). Sumbu Y dibatasi 0-300&deg;C; untuk Relay/Step Test di atas 300&deg;C titik akan terpotong secara visual saja (bukan data error). Grafik ini SATU-SATUNYA tempat melihat kurva suhu -- tetap dipakai walaupun Step Test atau Relay Test sedang berjalan.</div>
+  <div class="hint">Merah = suhu aktual, hijau putus-putus = setpoint aktif (0 saat idle/Step Test, karena Step Test tidak memakai setpoint). Polling /data/live tiap 2 detik, maksimum 300 titik (&plusmn;10 menit). Sumbu Y menyesuaikan otomatis ke rentang suhu &amp; setpoint yang sedang tampil (bukan 0-300&deg;C tetap) supaya osilasi kecil tetap terlihat jelas walau setpoint rendah. Grafik ini SATU-SATUNYA tempat melihat kurva suhu -- tetap dipakai walaupun Step Test atau Relay Test sedang berjalan.</div>
 </div>
 
 <!-- 11. Grafik Blower (Fan %) -->
@@ -807,11 +807,36 @@ function drawMiniChart(canvasId, series, lo, hi, yTickFmt) {
   }
 }
 
+// Hitung rentang Y otomatis dari data yang sedang tampil (bukan 0-300 tetap), supaya
+// osilasi kecil di setpoint rendah (mis. 50 C) tidak "tenggelam" di skala besar.
+// minSpan = lebar minimum sumbu (hindari zoom berlebihan saat suhu benar-benar datar).
+function autoRange(arrays, pad, minSpan) {
+  var lo = Infinity, hi = -Infinity;
+  for (var a = 0; a < arrays.length; a++) {
+    var arr = arrays[a];
+    for (var i = 0; i < arr.length; i++) {
+      var v = arr[i];
+      if (v === null || v === undefined || (typeof v === "number" && isNaN(v))) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+  }
+  if (lo === Infinity) { lo = 0; hi = minSpan; }
+  if (hi - lo < minSpan) {
+    var mid = (hi + lo) / 2;
+    lo = mid - minSpan / 2;
+    hi = mid + minSpan / 2;
+  }
+  lo -= pad; hi += pad;
+  return [Math.max(0, lo), hi];
+}
+
 function drawAllCharts() {
+  var tempRange = autoRange([liveTemp, liveSp], 5, 20);
   drawMiniChart("chartTemp", [
     { data: liveTemp, color: "#e94560" },
     { data: liveSp, color: "#4ecca3", dash: [6, 4] },
-  ], 0, 300);
+  ], tempRange[0], tempRange[1]);
   drawMiniChart("chartFan", [
     { data: liveFan, color: "#4ea1e9" },
   ], 0, 100);
