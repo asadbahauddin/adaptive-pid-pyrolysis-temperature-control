@@ -1625,6 +1625,26 @@ const char HTML[] PROGMEM = R"HTMLDIAG(
   <div class="hint">Menjalankan Adaptive PID (gain scheduling 3-zona sama seperti firmware utama: Kp x1.3 di bawah 200 C, x1.0 di 200-400 C, x0.7 di atas 400 C; Ki/Kd tetap) memakai Kp/Ki/Kd yang sedang aktif (lihat card 8, "PID aktif"). Pompa oli &amp; air dinyalakan OTOMATIS selama uji supaya oli benar-benar menetes, dan dimatikan otomatis saat uji selesai/distop -- kontrol manual pompa (card 4/5) terkunci selama uji berjalan. Dua mode durasi: <b>Waktu Tetap</b> (durasi ditentukan di atas; begitu habis, uji dimatikan otomatis, mau tidak mau) atau <b>Tanpa Batas</b> (centang kotak di atas; uji terus berjalan sampai Anda tekan STOP). Kedua mode tetap berhenti otomatis kalau suhu melebihi setpoint+100 C atau sensor gagal baca. Tidak bisa berjalan bersamaan dengan Step/Relay Test. Waktu tiap tetes dicatat (detik sejak mulai) untuk menghitung laju produksi -- unduh CSV-nya lewat tombol di atas atau logger.py di laptop.</div>
 </div>
 
+<!-- 10. Grafik Suhu & Setpoint -->
+<div class="card">
+  <h3>10. Grafik Suhu &amp; Setpoint</h3>
+  <canvas id="chartTemp" style="width:100%;height:220px;background:#0d1229;border:1px solid var(--border);border-radius:6px;"></canvas>
+  <div class="hint">Merah = suhu aktual, hijau putus-putus = setpoint aktif (0 saat idle/Step Test, karena Step Test tidak memakai setpoint). Polling /data/live tiap 2 detik, maksimum 300 titik (&plusmn;10 menit). Sumbu Y dibatasi 0-300&deg;C; untuk Relay/Step Test di atas 300&deg;C titik akan terpotong secara visual saja (bukan data error).</div>
+</div>
+
+<!-- 11. Grafik Blower (Fan %) -->
+<div class="card">
+  <h3>11. Grafik Blower (Fan %)</h3>
+  <canvas id="chartFan" style="width:100%;height:180px;background:#0d1229;border:1px solid var(--border);border-radius:6px;"></canvas>
+</div>
+
+<!-- 12. Grafik Pompa Air & Oli -->
+<div class="card">
+  <h3>12. Grafik Pompa Air &amp; Oli</h3>
+  <canvas id="chartPump" style="width:100%;height:160px;background:#0d1229;border:1px solid var(--border);border-radius:6px;"></canvas>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script>
 var connOk = false;
 
@@ -2132,6 +2152,118 @@ req("/step/status");
 req("/autotune/status");
 req("/pid/get");
 req("/method/status");
+
+// ---------------- Grafik real-time (card 10/11/12) ----------------
+// SATU setInterval untuk ketiga grafik: tiap 2 detik fetch /data/live sekali,
+// lalu dorong satu titik baru ke ketiganya sekaligus (bukan 1 interval/grafik).
+var LIVE_MAX_POINTS = 300;
+var liveStartMs = Date.now();
+var liveLabels = [];
+var liveTemp = [];
+var liveSp = [];
+var liveFan = [];
+var liveWater = [];
+var liveOil = [];
+
+function fmtMMSS(sec) {
+  var m = Math.floor(sec / 60);
+  var s = Math.floor(sec % 60);
+  return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
+}
+
+var liveGridColor = "#2a3358";
+var liveTickColor = "#8f9bb3";
+var liveChartDefaults = {
+  animation: false,
+  responsive: true,
+  maintainAspectRatio: false,
+  interaction: { mode: "nearest", intersect: false },
+  scales: { x: { ticks: { color: liveTickColor, maxTicksLimit: 8 }, grid: { color: liveGridColor } } },
+  plugins: { legend: { labels: { color: "#eaeaea", boxWidth: 12, font: { size: 11 } } } },
+};
+
+function liveOpts(yAxis) {
+  var o = JSON.parse(JSON.stringify(liveChartDefaults));
+  o.scales.y = yAxis;
+  return o;
+}
+
+var chartTemp = new Chart(document.getElementById("chartTemp"), {
+  type: "line",
+  data: {
+    labels: liveLabels,
+    datasets: [
+      { label: "Suhu (C)", data: liveTemp, borderColor: "#e94560", backgroundColor: "transparent",
+        borderWidth: 1.5, pointRadius: 0, tension: 0.15, spanGaps: false },
+      { label: "Setpoint (C)", data: liveSp, borderColor: "#4ecca3", backgroundColor: "transparent",
+        borderWidth: 1.5, borderDash: [6, 4], pointRadius: 0, tension: 0 },
+    ],
+  },
+  options: liveOpts({ min: 0, max: 300, ticks: { color: liveTickColor }, grid: { color: liveGridColor } }),
+});
+
+var chartFan = new Chart(document.getElementById("chartFan"), {
+  type: "line",
+  data: {
+    labels: liveLabels,
+    datasets: [
+      { label: "Fan (%)", data: liveFan, borderColor: "#4ea1e9", backgroundColor: "rgba(78,161,233,0.15)",
+        fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0.15 },
+    ],
+  },
+  options: liveOpts({ min: 0, max: 100, ticks: { color: liveTickColor }, grid: { color: liveGridColor } }),
+});
+
+var chartPump = new Chart(document.getElementById("chartPump"), {
+  type: "line",
+  data: {
+    labels: liveLabels,
+    datasets: [
+      { label: "Water", data: liveWater, borderColor: "#4ea1e9", backgroundColor: "transparent",
+        borderWidth: 1.5, pointRadius: 0, stepped: true },
+      { label: "Oil", data: liveOil, borderColor: "#ffd700", backgroundColor: "transparent",
+        borderWidth: 1.5, pointRadius: 0, stepped: true },
+    ],
+  },
+  options: liveOpts({
+    min: -0.2, max: 1.2, ticks: {
+      color: liveTickColor, stepSize: 1,
+      callback: function (v) { if (v === 0) return "OFF"; if (v === 1) return "ON"; return ""; },
+    },
+    grid: { color: liveGridColor },
+  }),
+});
+
+function liveFetch() {
+  var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 1500) : null;
+  fetch("/data/live", ctrl ? { signal: ctrl.signal } : {})
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (timer) clearTimeout(timer);
+      var sec = (Date.now() - liveStartMs) / 1000;
+      liveLabels.push(fmtMMSS(sec));
+      liveTemp.push((d.temp === null || d.temp === undefined) ? null : d.temp);
+      liveSp.push(typeof d.sp === "number" ? d.sp : null);
+      liveFan.push(typeof d.fan === "number" ? d.fan : null);
+      liveWater.push(d.water ? 1 : 0);
+      liveOil.push(d.oil ? 1 : 0);
+
+      while (liveLabels.length > LIVE_MAX_POINTS) {
+        liveLabels.shift(); liveTemp.shift(); liveSp.shift();
+        liveFan.shift(); liveWater.shift(); liveOil.shift();
+      }
+      chartTemp.update("none");
+      chartFan.update("none");
+      chartPump.update("none");
+    })
+    .catch(function () {
+      if (timer) clearTimeout(timer);
+      // Gagal (timeout/jaringan): lewati tick ini, jangan retry -- coba lagi otomatis di tick berikutnya.
+    });
+}
+
+setInterval(liveFetch, 2000);
 </script>
 </body>
 </html>
